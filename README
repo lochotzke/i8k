@@ -1,0 +1,197 @@
+OVERVIEW
+========
+
+This package contains a kernel driver for accessing the SMM BIOS
+of Dell Inspiron and Latitude laptops. The SMM BIOS is used on
+many recent laptops to implement APM functionalities and to access custom
+hardware, for example the cooling fans and volume buttons of the I8000.
+
+The kernel driver reports the following information about the hardware:
+
+    * BIOS version
+
+    * serial number
+
+    * CPU temperature
+
+    * fan status
+
+    * fan rotation speed (only on some models)
+
+    * ac power status
+
+
+THE KERNEL DRIVER
+=================
+
+The i8k SMM driver is included in the core kernel distribution.
+The driver source in this package is needed only if you want to compile
+the module for an older kernel version or if you need a more recent version
+than the one available in the Linux kernel.
+
+The driver has been reported to work with the following hardware and BIOS:
+
+    Inspiron 510m  (BIOS A06), with force=1
+    Inspiron 1100  (BIOS A06), one fan, no buttons
+    Inspiron 2650  (BIOS A05)
+    Inspiron 3700  (BIOS A15), no fan speed
+    Inspiron 3800  (BIOS A14), no fan speed
+    Inspiron 4000  (BIOS A10), no fan speed
+    Inspiron 4100
+    Inspiron 4150
+    Inspiron 5100  (BIOS A06), one fan, no buttons
+    Inspiron 5150  (BIOS A24), one fan, no buttons, force=1
+    Inspiron 8000  (BIOS A17)
+    Inspiron 8100  (BIOS A04)
+    Inspiron 8200  (BIOS A06)
+    Inspiron 8600  (BIOS A08), with force=1
+    Inspiron 8600C (BIOS A11), with force=1
+    Inspiron 9200
+    Latitude C400  (BIOS A01)
+    Latitude C510  (BIOS A07)
+    Latitude C600  (BIOS A17)
+    Latitude C610
+    Latitude C800  (BIOS A17)
+    Latitude C810  (BIOS A12)
+    Latitude C840  (BIOS A10)
+    Latitude CPiA  (BIOS A14), no fan speed
+    Latitude CPt C-Series (BIOS A14), no fan speed
+    Latitude CPx J750GT (BIOS A13), no fan speed
+    Latitude D600  (BIOS A05)
+    Latitude D800  (BIOS A00)
+    Latitude X200  (BIOS A07)
+
+but will probably work on any recent Dell laptop. Note that on some models
+or BIOS versions the fan speed is not available. On some BIOS also the BIOS
+version is not available from SMM but the driver is able to obtain it using
+another method.
+
+The driver seems *NOT WORKING* on the following models:
+
+    Inspiron 2500 (BIOS A10)
+    Inspiron 3200
+    Inspiron 3500
+    Inspiron 5000e (BIOS A06)
+    Inspiron 5150 (BIOS A23)
+    Inspiron 7000
+    Inspiron 7500
+    Latitude CPx H450GT
+    Latitude LS H500ST
+    Latitude L400
+
+On loading the module checks for the presence of an Dell Inspiron or Latitude
+laptop and refuses to load if running on an unknown system. You can however
+force loading of the driver, for testing it on unknown hardware, by passing
+the "force=1" option to insmod:
+
+    insmod i8k.o force=1
+
+Note that force loading of the module on unknown hardware could crash your
+system and will anyway 'taint' the kernel. The force option is provided
+only for testing purposes or for loading on systems where the BIOS version
+can't be read from the SMM BIOS.
+
+The information provided by the kernel driver can be accessed by simply
+reading the /proc/i8k file. For example:
+
+    $ cat /proc/i8k
+    1.0 A17 2J59L02 52 2 1 8040 6420 1 2
+
+The fields read from /proc/i8k are:
+
+    1.0 A17 2J59L02 52 2 1 8040 6420 1 2
+    |   |   |       |  | | |    |    | |
+    |   |   |       |  | | |    |    | +------- 10. buttons status
+    |   |   |       |  | | |    |    +--------- 9.  ac status
+    |   |   |       |  | | |    +-------------- 8.  right fan rpm
+    |   |   |       |  | | +------------------- 7.  left fan rpm
+    |   |   |       |  | +--------------------- 6.  right fan status
+    |   |   |       |  +----------------------- 5.  left fan status
+    |   |   |       +-------------------------- 4.  CPU temperature (Celsius)
+    |   |   +---------------------------------- 3.  serial number
+    |   +-------------------------------------- 2.  BIOS version
+    +------------------------------------------ 1.  /proc/i8k format version
+
+A negative value, for example -22, indicates that the BIOS doesn't return
+the corresponding information. This is normal on some models/bioses.
+
+For performance reasons the /proc/i8k doesn't report by default the ac status
+since this SMM call takes a long time to execute and is not really needed.
+If you want to see the ac status in /proc/i8k you must explictitly enable
+this option by passing the "power_status=1" parameter to insmod. If ac status
+is not available -1 is printed instead.
+
+The driver provides also an ioctl interface which can be used to obtain the
+same information and to control the fan status. The ioctl interface can be
+accessed from C programs or from shell using the i8kctl utility. See the
+source file i8kctl.c for more information on how to use the ioctl interface.
+
+The driver accepts the following parameters:
+
+    force=1
+
+	force loading of the driver on unknown hardware.
+
+    ignore_dmi=1
+	Continue probing hardware even if DMI data does not match.
+
+    restricted=1
+
+	allow fan control only to processes with the CAP_SYS_ADMIN capability
+	set or processes run as root. In this case normal users will be able
+	to read temperature and fan status but not to control the fan.
+	If your notebook is shared with other users and you don't trust them
+	you may want to use this option.
+
+    power_status=1
+
+	report ac status in /proc/i8k. Default is 0.
+
+    fan_mult
+
+	Factor to multiply fan speed with. Defaults is 30.
+
+You can specify the module parameters when loading the module or as kernel
+option when booting the kernel if the driver is compiled statically.
+
+To have the module loaded atomatically at boot you must manually add the
+line "i8k" into the file /etc/modules or use the modconf utility, if
+available in your distribution, and select the i8k module. For example:
+
+    $ cat /etc/modules
+    # /etc/modules: kernel modules to load at boot time.
+    #
+    # This file should contain the names of kernel modules that are
+    # to be loaded at boot time, one per line.  Comments begin with
+    # a #, and everything on the line after them are ignored.
+    #
+    apm
+    i8k
+
+Any module parameters must be specified in /etc/modules.conf, for example:
+
+    $ grep i8k /etc/modules.conf
+    options i8k restricted=1
+
+If you are using modconf the file /etc/modules.conf is updated automatically
+with the options specified in the user interface.
+
+
+TROUBLESHOOTING
+===============
+
+If you have problems loading the kernel module or have succesfully tested
+it on different hardware please let me know your results. Don't forget to
+include the following information:
+
+    laptop model
+    BIOS version
+    driver version
+    kernel config file
+    kernel messages while loading the driver
+    output of "cat /proc/i8k"
+
+Before reporting bugs be sure to be using the latest kernel module
+and the latest BIOS available for your laptop. Old versions of the
+driver may not work correctly and old BIOS versios may not support
+all the SMM functions used by the driver.
