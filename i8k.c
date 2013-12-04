@@ -1,12 +1,11 @@
 /*
  * i8k.c -- Linux driver for accessing the SMM BIOS on Dell laptops.
- *	    See http://www.debian.org/~dz/i8k/ for more information
- *	    and for latest version of this driver.
  *
  * Copyright (C) 2001  Massimo Dal Zotto <dz@debian.org>
  *
  * Hwmon integration:
  * Copyright (C) 2011  Jean Delvare <khali@linux-fr.org>
+ * Copyright (C) 2013  Guenter Roeck <linux@roeck-us.net>
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -34,10 +33,9 @@
 #include <linux/hwmon-sysfs.h>
 #include <linux/uaccess.h>
 #include <linux/io.h>
+#include <linux/sched.h>
 
 #include <linux/i8k.h>
-
-#define I8K_VERSION		"1.14 21/02/2005"
 
 #define I8K_SMM_FN_STATUS	0x0025
 #define I8K_SMM_POWER_STATUS	0x0069
@@ -135,6 +133,17 @@ static int i8k_smm(struct smm_regs *regs)
 {
 	int rc;
 	int eax = regs->eax;
+	cpumask_var_t old_mask;
+
+	/* SMM requires CPU 0 */
+	if (!alloc_cpumask_var(&old_mask, GFP_KERNEL))
+		return -ENOMEM;
+	cpumask_copy(old_mask, &current->cpus_allowed);
+	set_cpus_allowed_ptr(current, cpumask_of(0));
+	if (smp_processor_id() != 0) {
+		rc = -EBUSY;
+		goto out;
+	}
 
 #if defined(CONFIG_X86_64)
 	asm volatile("pushq %%rax\n\t"
@@ -190,9 +199,12 @@ static int i8k_smm(struct smm_regs *regs)
 	    :    "%ebx", "%ecx", "%edx", "%esi", "%edi", "memory");
 #endif
 	if (rc != 0 || (regs->eax & 0xffff) == 0xffff || regs->eax == eax)
-		return -EINVAL;
+		rc = -EINVAL;
 
-	return 0;
+out:
+	set_cpus_allowed_ptr(current, old_mask);
+	free_cpumask_var(old_mask);
+	return rc;
 }
 
 /*
@@ -522,6 +534,16 @@ static ssize_t i8k_hwmon_show_label(struct device *dev,
 	return sprintf(buf, "%s\n", labels[index]);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 13, 0)
+static ssize_t i8k_hwmon_show_name(struct device *dev,
+				   struct device_attribute *devattr, char *buf)
+{
+	return sprintf(buf, "%s\n", KBUILD_MODNAME);
+}
+
+static DEVICE_ATTR(name, S_IRUGO, i8k_hwmon_show_name, NULL);
+#endif
+
 static SENSOR_DEVICE_ATTR(temp1_input, S_IRUGO, i8k_hwmon_show_temp, NULL, 0);
 static SENSOR_DEVICE_ATTR(temp2_input, S_IRUGO, i8k_hwmon_show_temp, NULL, 1);
 static SENSOR_DEVICE_ATTR(temp3_input, S_IRUGO, i8k_hwmon_show_temp, NULL, 2);
@@ -544,6 +566,9 @@ static struct attribute *i8k_attrs[] = {
 	&sensor_dev_attr_fan1_label.dev_attr.attr,	/* 6 */
 	&sensor_dev_attr_fan2_input.dev_attr.attr,	/* 7 */
 	&sensor_dev_attr_fan2_label.dev_attr.attr,	/* 8 */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 13, 0)
+	&dev_attr_name.attr,
+#endif
 	NULL
 };
 
@@ -685,6 +710,13 @@ static struct dmi_system_id i8k_dmi_table[] __initdata = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "Vostro"),
 		},
 	},
+	{
+		.ident = "Dell Studio",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Studio"),
+		},
+	},
 	{ }
 };
 
@@ -769,9 +801,6 @@ static int __init i8k_init(void)
 	if (err)
 		goto exit_remove_proc;
 
-	pr_info("Dell laptop SMM driver v%s Massimo Dal Zotto (dz@debian.org)\n",
-		I8K_VERSION);
-
 	return 0;
 
  exit_remove_proc:
@@ -782,7 +811,7 @@ static int __init i8k_init(void)
 static void __exit i8k_exit(void)
 {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 13, 0)
-	sysfs_remove_group(&i8k_hwmon_dev->dev.kobj, &i8k_group);
+	sysfs_remove_group(&i8k_hwmon_dev->kobj, &i8k_group);
 #endif
 	hwmon_device_unregister(i8k_hwmon_dev);
 	remove_proc_entry("i8k", NULL);
