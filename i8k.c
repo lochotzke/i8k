@@ -44,8 +44,6 @@
 #define I8K_SMM_GET_SPEED	0x02a3
 #define I8K_SMM_GET_TEMP	0x10a3
 
-#define I8K_SMM_SET_FAN_MANUAL	0x30a3	/* manual fan control		*/
-#define I8K_SMM_SET_FAN_AUTO	0x31a3	/* BIOS (automatic) fan control	*/
 #define I8K_SMM_GET_DELL_SIG1	0xfea3
 #define I8K_SMM_GET_DELL_SIG2	0xffa3
 
@@ -69,7 +67,6 @@ static char bios_version[4];
 static struct device *i8k_hwmon_dev;
 static u32 i8k_hwmon_flags;
 static int i8k_fan_mult;
-static int i8k_fan_enable[2] = { 2, 2 }; /* Assume auto mode by default */
 
 #define I8K_HWMON_HAVE_TEMP1	(1 << 0)
 #define I8K_HWMON_HAVE_TEMP2	(1 << 1)
@@ -283,19 +280,6 @@ static int i8k_set_fan(int fan, int speed)
 	regs.ebx = (fan & 0xff) | (speed << 8);
 
 	return i8k_smm(&regs) ? : i8k_get_fan_status(fan);
-}
-
-/*
- * Set the fan control mode
- */
-static int i8k_set_fan_mode(int fan, bool enable)
-{
-	struct smm_regs regs = { .eax = enable ? I8K_SMM_SET_FAN_AUTO
-					       : I8K_SMM_SET_FAN_MANUAL, };
-
-	regs.ebx = fan & 0xff;
-
-	return i8k_smm(&regs) ? : 0;
 }
 
 /*
@@ -560,51 +544,6 @@ static ssize_t i8k_hwmon_set_pwm(struct device *dev,
 	return err < 0 ? -EIO : count;
 }
 
-static ssize_t i8k_hwmon_show_pwm_enable(struct device *dev,
-					 struct device_attribute *devattr,
-					 char *buf)
-{
-	int index = to_sensor_dev_attr(devattr)->index;
-
-	return sprintf(buf, "%d\n", i8k_fan_enable[index]);
-}
-
-static ssize_t i8k_hwmon_set_pwm_enable(struct device *dev,
-					struct device_attribute *attr,
-					const char *buf, size_t count)
-{
-	int index = to_sensor_dev_attr(attr)->index;
-	unsigned long val;
-	int err;
-
-	err = kstrtoul(buf, 10, &val);
-	if (err)
-		return err;
-	if (val > 2)
-		return -EINVAL;
-
-	mutex_lock(&i8k_mutex);
-	i8k_fan_enable[index] = val;
-	switch (val) {
-	case 0:	/* Set fan to max speed, disable BIOS fan control */
-		err = i8k_set_fan_mode(index, false);
-		if (!err)
-			err = i8k_set_fan(index, 2);
-		break;
-	case 1:	/* manual fan speed control */
-		err = i8k_set_fan_mode(index, false);
-		break;
-	case 2: /* automatic fan speed control */
-		err = i8k_set_fan_mode(index, true);
-		break;
-	default:
-		break;
-	}
-	mutex_unlock(&i8k_mutex);
-
-	return err < 0 ? -EIO : count;
-}
-
 static ssize_t i8k_hwmon_show_label(struct device *dev,
 				    struct device_attribute *devattr,
 				    char *buf)
@@ -637,16 +576,10 @@ static SENSOR_DEVICE_ATTR(fan1_input, S_IRUGO, i8k_hwmon_show_fan, NULL,
 			  I8K_FAN_LEFT);
 static SENSOR_DEVICE_ATTR(pwm1, S_IRUGO | S_IWUSR, i8k_hwmon_show_pwm,
 			  i8k_hwmon_set_pwm, I8K_FAN_LEFT);
-static SENSOR_DEVICE_ATTR(pwm1_enable, S_IRUGO | S_IWUSR,
-			  i8k_hwmon_show_pwm_enable,
-			  i8k_hwmon_set_pwm_enable, I8K_FAN_LEFT);
 static SENSOR_DEVICE_ATTR(fan2_input, S_IRUGO, i8k_hwmon_show_fan, NULL,
 			  I8K_FAN_RIGHT);
 static SENSOR_DEVICE_ATTR(pwm2, S_IRUGO | S_IWUSR, i8k_hwmon_show_pwm,
 			  i8k_hwmon_set_pwm, I8K_FAN_RIGHT);
-static SENSOR_DEVICE_ATTR(pwm2_enable, S_IRUGO | S_IWUSR,
-			  i8k_hwmon_show_pwm_enable,
-			  i8k_hwmon_set_pwm_enable, I8K_FAN_RIGHT);
 static SENSOR_DEVICE_ATTR(temp1_label, S_IRUGO, i8k_hwmon_show_label, NULL, 0);
 static SENSOR_DEVICE_ATTR(fan1_label, S_IRUGO, i8k_hwmon_show_label, NULL, 1);
 static SENSOR_DEVICE_ATTR(fan2_label, S_IRUGO, i8k_hwmon_show_label, NULL, 2);
@@ -659,12 +592,10 @@ static struct attribute *i8k_attrs[] = {
 	&sensor_dev_attr_temp4_input.dev_attr.attr,	/* 4 */
 	&sensor_dev_attr_fan1_input.dev_attr.attr,	/* 5 */
 	&sensor_dev_attr_pwm1.dev_attr.attr,		/* 6 */
-	&sensor_dev_attr_pwm1_enable.dev_attr.attr,	/* 7 */
-	&sensor_dev_attr_fan1_label.dev_attr.attr,	/* 8 */
-	&sensor_dev_attr_fan2_input.dev_attr.attr,	/* 9 */
-	&sensor_dev_attr_pwm2.dev_attr.attr,		/* 10 */
-	&sensor_dev_attr_pwm2_enable.dev_attr.attr,	/* 11 */
-	&sensor_dev_attr_fan2_label.dev_attr.attr,	/* 12 */
+	&sensor_dev_attr_fan1_label.dev_attr.attr,	/* 7 */
+	&sensor_dev_attr_fan2_input.dev_attr.attr,	/* 8 */
+	&sensor_dev_attr_pwm2.dev_attr.attr,		/* 9 */
+	&sensor_dev_attr_fan2_label.dev_attr.attr,	/* 10 */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 13, 0)
 	&dev_attr_name.attr,
 #endif
@@ -683,10 +614,10 @@ static umode_t i8k_is_visible(struct kobject *kobj, struct attribute *attr,
 		return 0;
 	if (index == 4 && !(i8k_hwmon_flags & I8K_HWMON_HAVE_TEMP4))
 		return 0;
-	if (index >= 5 && index <= 8 &&
+	if (index >= 5 && index <= 7 &&
 	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_FAN1))
 		return 0;
-	if (index >= 9 && index <= 12 &&
+	if (index >= 8 && index <= 10 &&
 	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_FAN2))
 		return 0;
 
