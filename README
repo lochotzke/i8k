@@ -2,9 +2,9 @@ OVERVIEW
 ========
 
 This package contains a kernel driver for accessing the SMM BIOS
-of Dell Inspiron and Latitude laptops. The SMM BIOS is used on
-many recent laptops to implement APM functionalities and to access custom
-hardware, for example the cooling fans and volume buttons of the I8000.
+of various Dell laptops. The SMM BIOS is used on many recent laptops
+to implement APM functionalities and to access custom hardware,
+for example the cooling fans and volume buttons of the I8000.
 
 The kernel driver reports the following information about the hardware:
 
@@ -41,12 +41,14 @@ The driver has been reported to work with the following hardware and BIOS:
     Inspiron 4150
     Inspiron 5100  (BIOS A06), one fan, no buttons
     Inspiron 5150  (BIOS A24), one fan, no buttons, force=1
+    Inspiron 6400  (UK model)
     Inspiron 8000  (BIOS A17)
     Inspiron 8100  (BIOS A04)
     Inspiron 8200  (BIOS A06)
     Inspiron 8600  (BIOS A08), with force=1
     Inspiron 8600C (BIOS A11), with force=1
     Inspiron 9200
+    Inspiron 9400/E1705
     Latitude C400  (BIOS A01)
     Latitude C510  (BIOS A07)
     Latitude C600  (BIOS A17)
@@ -60,6 +62,10 @@ The driver has been reported to work with the following hardware and BIOS:
     Latitude D600  (BIOS A05)
     Latitude D800  (BIOS A00)
     Latitude X200  (BIOS A07)
+    Precision (exact models unknown)
+    Studio 1555
+    Vostro 1400
+    XPS M140
 
 but will probably work on any recent Dell laptop. Note that on some models
 or BIOS versions the fan speed is not available. On some BIOS also the BIOS
@@ -79,10 +85,10 @@ The driver seems *NOT WORKING* on the following models:
     Latitude LS H500ST
     Latitude L400
 
-On loading the module checks for the presence of an Dell Inspiron or Latitude
-laptop and refuses to load if running on an unknown system. You can however
-force loading of the driver, for testing it on unknown hardware, by passing
-the "force=1" option to insmod:
+On loading the module checks for the presence of a known Dell laptop
+and refuses to load if running on an unknown system. You can however
+force loading of the driver, for testing it on unknown hardware,
+by passing the "force=1" option to insmod:
 
     insmod i8k.o force=1
 
@@ -149,7 +155,10 @@ The driver accepts the following parameters:
 
     fan_mult
 
-	Factor to multiply fan speed with. Defaults is 30.
+	Factor to multiply fan speed with. Defaults is 30. For some systems
+	the default is overwritten with a system specific value, typically 1.
+	This is curently the case for Dell Studio laptops as well as for Dell
+	XPS M140.
 
 You can specify the module parameters when loading the module or as kernel
 option when booting the kernel if the driver is compiled statically.
@@ -195,3 +204,16 @@ Before reporting bugs be sure to be using the latest kernel module
 and the latest BIOS available for your laptop. Old versions of the
 driver may not work correctly and old BIOS versios may not support
 all the SMM functions used by the driver.
+
+If your system reports very high fan speeds (often 80,000 rpm or higher),
+it likely needs a fan multiplier value of 1 instead of the default 30.
+Please report that situation so the driver can be updated accordingly.
+
+
+CREDITS
+=======
+
+Most of this README file has been copied from the i8kutils package.
+The original driver was written by Massimo Dal Zotto. The interface
+to the hwmon subsystem was added by Jean Delvare. Many other developers
+have contributed various pieces of code over time.
