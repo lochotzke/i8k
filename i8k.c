@@ -20,6 +20,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/init.h>
@@ -306,35 +307,31 @@ static int i8k_get_temp_type(int sensor)
 /*
  * Read the cpu temperature.
  */
+static int _i8k_get_temp(int sensor)
+{
+	struct smm_regs regs = {
+		.eax = I8K_SMM_GET_TEMP,
+		.ebx = sensor & 0xff,
+	};
+
+	return i8k_smm(&regs) ? : regs.eax & 0xff;
+}
+
 static int i8k_get_temp(int sensor)
 {
-	struct smm_regs regs = { .eax = I8K_SMM_GET_TEMP, };
-	int rc;
-	int temp;
-
-#ifdef I8K_TEMPERATURE_BUG
-	static int prev[4] = { I8K_MAX_TEMP+1, I8K_MAX_TEMP+1, I8K_MAX_TEMP+1, I8K_MAX_TEMP+1 };
-#endif
-	regs.ebx = sensor & 0xff;
-	rc = i8k_smm(&regs);
-	if (rc < 0)
-		return rc;
-
-	temp = regs.eax & 0xff;
+	int temp = _i8k_get_temp(sensor);
 
 #ifdef I8K_TEMPERATURE_BUG
 	/*
 	 * Sometimes the temperature sensor returns 0x99, which is out of range.
-	 * In this case we return (once) the previous cached value. For example:
+	 * In this case we retry (once) before returning an error.
 	 # 1003655137 00000058 00005a4b
 	 # 1003655138 00000099 00003a80 <--- 0x99 = 153 degrees
 	 # 1003655139 00000054 00005c52
 	 */
 	if (temp > I8K_MAX_TEMP) {
-		temp = prev[sensor];
-		prev[sensor] = I8K_MAX_TEMP+1;
-	} else {
-		prev[sensor] = temp;
+		msleep(100);
+		temp = _i8k_get_temp(sensor);
 	}
 	if (temp > I8K_MAX_TEMP)
 		return -ERANGE;
@@ -509,8 +506,8 @@ static int i8k_open_fs(struct inode *inode, struct file *file)
  */
 
 static ssize_t i8k_hwmon_show_temp_label(struct device *dev,
-				   struct device_attribute *devattr,
-				   char *buf)
+					 struct device_attribute *devattr,
+					 char *buf)
 {
 	static const char * const labels[] = {
 		"CPU",
@@ -593,13 +590,17 @@ static ssize_t i8k_hwmon_set_pwm(struct device *dev,
 }
 
 static SENSOR_DEVICE_ATTR(temp1_input, S_IRUGO, i8k_hwmon_show_temp, NULL, 0);
-static SENSOR_DEVICE_ATTR(temp1_label, S_IRUGO, i8k_hwmon_show_temp_label, NULL, 0);
+static SENSOR_DEVICE_ATTR(temp1_label, S_IRUGO, i8k_hwmon_show_temp_label,
+			  NULL, 0);
 static SENSOR_DEVICE_ATTR(temp2_input, S_IRUGO, i8k_hwmon_show_temp, NULL, 1);
-static SENSOR_DEVICE_ATTR(temp2_label, S_IRUGO, i8k_hwmon_show_temp_label, NULL, 1);
+static SENSOR_DEVICE_ATTR(temp2_label, S_IRUGO, i8k_hwmon_show_temp_label,
+			  NULL, 1);
 static SENSOR_DEVICE_ATTR(temp3_input, S_IRUGO, i8k_hwmon_show_temp, NULL, 2);
-static SENSOR_DEVICE_ATTR(temp3_label, S_IRUGO, i8k_hwmon_show_temp_label, NULL, 2);
+static SENSOR_DEVICE_ATTR(temp3_label, S_IRUGO, i8k_hwmon_show_temp_label,
+			  NULL, 2);
 static SENSOR_DEVICE_ATTR(temp4_input, S_IRUGO, i8k_hwmon_show_temp, NULL, 3);
-static SENSOR_DEVICE_ATTR(temp4_label, S_IRUGO, i8k_hwmon_show_temp_label, NULL, 3);
+static SENSOR_DEVICE_ATTR(temp4_label, S_IRUGO, i8k_hwmon_show_temp_label,
+			  NULL, 3);
 static SENSOR_DEVICE_ATTR(fan1_input, S_IRUGO, i8k_hwmon_show_fan, NULL,
 			  I8K_FAN_LEFT);
 static SENSOR_DEVICE_ATTR(pwm1, S_IRUGO | S_IWUSR, i8k_hwmon_show_pwm,
@@ -628,13 +629,17 @@ static struct attribute *i8k_attrs[] = {
 static umode_t i8k_is_visible(struct kobject *kobj, struct attribute *attr,
 			      int index)
 {
-	if (index >= 0 && index <= 1 && !(i8k_hwmon_flags & I8K_HWMON_HAVE_TEMP1))
+	if (index >= 0 && index <= 1 &&
+	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_TEMP1))
 		return 0;
-	if (index >= 2 && index <= 3 && !(i8k_hwmon_flags & I8K_HWMON_HAVE_TEMP2))
+	if (index >= 2 && index <= 3 &&
+	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_TEMP2))
 		return 0;
-	if (index >= 4 && index <= 5 && !(i8k_hwmon_flags & I8K_HWMON_HAVE_TEMP3))
+	if (index >= 4 && index <= 5 &&
+	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_TEMP3))
 		return 0;
-	if (index >= 6 && index <= 7 && !(i8k_hwmon_flags & I8K_HWMON_HAVE_TEMP4))
+	if (index >= 6 && index <= 7 &&
+	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_TEMP4))
 		return 0;
 	if (index >= 8 && index <= 9 &&
 	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_FAN1))
@@ -652,37 +657,6 @@ static const struct attribute_group i8k_group = {
 };
 __ATTRIBUTE_GROUPS(i8k);
 
-static bool __init i8k_check_temp(int sensor)
-{
-	int err;
-
-	/*
-	 * Check if temperature sensor type is valid.
-	 *
-	 * If it is valid then sensor should work. But some sensors are not
-	 * available at any time. E.g GPU sensor on Optimus/PowerExpress/Enduro
-	 * card does not work (or return bogus value) when card is turned off.
-	 * So this function should not fail in this case.
-	 */
-	err = i8k_get_temp_type(sensor);
-	if (err >= 0)
-		return true;
-
-	/*
-	 * Check if temperatrue reading does not fail.
-	 *
-	 * Sometimes detection of temperature sensor type does not work but
-	 * reading temperature working fine. Sometimes temperature value is too
-	 * high and i8k_get_temp() returns -ERANGE. But there is no reason to
-	 * ignore these temperature sensors.
-	 */
-	err = i8k_get_temp(sensor);
-	if (err >= 0 || err == -ERANGE)
-		return true;
-
-	return false;
-}
-
 static int __init i8k_init_hwmon(void)
 {
 	int err;
@@ -690,13 +664,18 @@ static int __init i8k_init_hwmon(void)
 	i8k_hwmon_flags = 0;
 
 	/* CPU temperature attributes, if temperature reading is OK */
-	if (i8k_check_temp(0))
+	err = i8k_get_temp_type(0);
+	if (err >= 0)
 		i8k_hwmon_flags |= I8K_HWMON_HAVE_TEMP1;
-	if (i8k_check_temp(1))
+	/* check for additional temperature sensors */
+	err = i8k_get_temp_type(1);
+	if (err >= 0)
 		i8k_hwmon_flags |= I8K_HWMON_HAVE_TEMP2;
-	if (i8k_check_temp(2))
+	err = i8k_get_temp_type(2);
+	if (err >= 0)
 		i8k_hwmon_flags |= I8K_HWMON_HAVE_TEMP3;
-	if (i8k_check_temp(3))
+	err = i8k_get_temp_type(3);
+	if (err >= 0)
 		i8k_hwmon_flags |= I8K_HWMON_HAVE_TEMP4;
 
 	/* Left fan attributes, if left fan is present */
