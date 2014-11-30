@@ -80,8 +80,9 @@ static int i8k_fan_max = I8K_FAN_HIGH;
 #define I8K_HWMON_HAVE_TEMP2	(1 << 1)
 #define I8K_HWMON_HAVE_TEMP3	(1 << 2)
 #define I8K_HWMON_HAVE_TEMP4	(1 << 3)
-#define I8K_HWMON_HAVE_FAN1	(1 << 4)
-#define I8K_HWMON_HAVE_FAN2	(1 << 5)
+#define I8K_HWMON_HAVE_TEMP5	(1 << 4)
+#define I8K_HWMON_HAVE_FAN1	(1 << 5)
+#define I8K_HWMON_HAVE_FAN2	(1 << 6)
 
 MODULE_AUTHOR("Massimo Dal Zotto (dz@debian.org)");
 MODULE_DESCRIPTION("Driver for accessing SMM BIOS on Dell laptops");
@@ -601,6 +602,9 @@ static SENSOR_DEVICE_ATTR(temp3_label, S_IRUGO, i8k_hwmon_show_temp_label,
 static SENSOR_DEVICE_ATTR(temp4_input, S_IRUGO, i8k_hwmon_show_temp, NULL, 3);
 static SENSOR_DEVICE_ATTR(temp4_label, S_IRUGO, i8k_hwmon_show_temp_label,
 			  NULL, 3);
+static SENSOR_DEVICE_ATTR(temp5_input, S_IRUGO, i8k_hwmon_show_temp, NULL, 4);
+static SENSOR_DEVICE_ATTR(temp5_label, S_IRUGO, i8k_hwmon_show_temp_label,
+			  NULL, 4);
 static SENSOR_DEVICE_ATTR(fan1_input, S_IRUGO, i8k_hwmon_show_fan, NULL,
 			  I8K_FAN_LEFT);
 static SENSOR_DEVICE_ATTR(pwm1, S_IRUGO | S_IWUSR, i8k_hwmon_show_pwm,
@@ -619,10 +623,12 @@ static struct attribute *i8k_attrs[] = {
 	&sensor_dev_attr_temp3_label.dev_attr.attr,	/* 5 */
 	&sensor_dev_attr_temp4_input.dev_attr.attr,	/* 6 */
 	&sensor_dev_attr_temp4_label.dev_attr.attr,	/* 7 */
-	&sensor_dev_attr_fan1_input.dev_attr.attr,	/* 8 */
-	&sensor_dev_attr_pwm1.dev_attr.attr,		/* 9 */
-	&sensor_dev_attr_fan2_input.dev_attr.attr,	/* 10 */
-	&sensor_dev_attr_pwm2.dev_attr.attr,		/* 11 */
+	&sensor_dev_attr_temp5_input.dev_attr.attr,	/* 8 */
+	&sensor_dev_attr_temp5_label.dev_attr.attr,	/* 9 */
+	&sensor_dev_attr_fan1_input.dev_attr.attr,	/* 10 */
+	&sensor_dev_attr_pwm1.dev_attr.attr,		/* 11 */
+	&sensor_dev_attr_fan2_input.dev_attr.attr,	/* 12 */
+	&sensor_dev_attr_pwm2.dev_attr.attr,		/* 13 */
 	NULL
 };
 
@@ -642,9 +648,12 @@ static umode_t i8k_is_visible(struct kobject *kobj, struct attribute *attr,
 	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_TEMP4))
 		return 0;
 	if (index >= 8 && index <= 9 &&
-	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_FAN1))
+	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_TEMP5))
 		return 0;
 	if (index >= 10 && index <= 11 &&
+	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_FAN1))
+		return 0;
+	if (index >= 12 && index <= 13 &&
 	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_FAN2))
 		return 0;
 
@@ -677,6 +686,9 @@ static int __init i8k_init_hwmon(void)
 	err = i8k_get_temp_type(3);
 	if (err >= 0)
 		i8k_hwmon_flags |= I8K_HWMON_HAVE_TEMP4;
+	err = i8k_get_temp_type(4);
+	if (err >= 0)
+		i8k_hwmon_flags |= I8K_HWMON_HAVE_TEMP5;
 
 	/* Left fan attributes, if left fan is present */
 	err = i8k_get_fan_status(I8K_FAN_LEFT);
