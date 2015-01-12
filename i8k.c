@@ -6,6 +6,7 @@
  * Hwmon integration:
  * Copyright (C) 2011  Jean Delvare <jdelvare@suse.de>
  * Copyright (C) 2013, 2014  Guenter Roeck <linux@roeck-us.net>
+ * Copyright (C) 2014  Pali Rohár <pali.rohar@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -37,23 +38,21 @@
 
 #include <linux/i8k.h>
 
-#ifndef I8K_FAN_TURBO
-#undef I8K_FAN_MAX
-#define I8K_FAN_TURBO          3
-#define I8K_FAN_MAX            I8K_FAN_TURBO
-#endif
+#include "compat.h"
 
 #define I8K_SMM_FN_STATUS	0x0025
 #define I8K_SMM_POWER_STATUS	0x0069
 #define I8K_SMM_SET_FAN		0x01a3
 #define I8K_SMM_GET_FAN		0x00a3
 #define I8K_SMM_GET_SPEED	0x02a3
+#define I8K_SMM_GET_NOM_SPEED	0x04a3
 #define I8K_SMM_GET_TEMP	0x10a3
 #define I8K_SMM_GET_TEMP_TYPE	0x11a3
 #define I8K_SMM_GET_DELL_SIG1	0xfea3
 #define I8K_SMM_GET_DELL_SIG2	0xffa3
 
 #define I8K_FAN_MULT		30
+#define I8K_FAN_MAX_RPM		30000
 #define I8K_MAX_TEMP		127
 
 #define I8K_FN_NONE		0x00
@@ -66,23 +65,20 @@
 #define I8K_POWER_AC		0x05
 #define I8K_POWER_BATTERY	0x01
 
-#define I8K_TEMPERATURE_BUG	1
-
 static DEFINE_MUTEX(i8k_mutex);
 static char bios_version[4];
 static struct device *i8k_hwmon_dev;
 static u32 i8k_hwmon_flags;
-static int i8k_fan_mult;
-static int i8k_pwm_mult;
-static int i8k_fan_max = I8K_FAN_HIGH;
+static uint i8k_fan_mult = I8K_FAN_MULT;
+static uint i8k_pwm_mult;
+static uint i8k_fan_max = I8K_FAN_HIGH;
 
 #define I8K_HWMON_HAVE_TEMP1	(1 << 0)
 #define I8K_HWMON_HAVE_TEMP2	(1 << 1)
 #define I8K_HWMON_HAVE_TEMP3	(1 << 2)
 #define I8K_HWMON_HAVE_TEMP4	(1 << 3)
-#define I8K_HWMON_HAVE_TEMP5	(1 << 4)
-#define I8K_HWMON_HAVE_FAN1	(1 << 5)
-#define I8K_HWMON_HAVE_FAN2	(1 << 6)
+#define I8K_HWMON_HAVE_FAN1	(1 << 4)
+#define I8K_HWMON_HAVE_FAN2	(1 << 5)
 
 MODULE_AUTHOR("Massimo Dal Zotto (dz@debian.org)");
 MODULE_DESCRIPTION("Driver for accessing SMM BIOS on Dell laptops");
@@ -104,13 +100,13 @@ static bool power_status;
 module_param(power_status, bool, 0600);
 MODULE_PARM_DESC(power_status, "Report power status in /proc/i8k");
 
-static int fan_mult = I8K_FAN_MULT;
-module_param(fan_mult, int, 0);
-MODULE_PARM_DESC(fan_mult, "Factor to multiply fan speed with");
+static uint fan_mult;
+module_param(fan_mult, uint, 0);
+MODULE_PARM_DESC(fan_mult, "Factor to multiply fan speed with (default: autodetect)");
 
-static int fan_max = I8K_FAN_HIGH;
-module_param(fan_max, int, 0);
-MODULE_PARM_DESC(fan_max, "Maximum configurable fan speed");
+static uint fan_max;
+module_param(fan_max, uint, 0);
+MODULE_PARM_DESC(fan_max, "Maximum configurable fan speed (default: autodetect)");
 
 static int i8k_open_fs(struct inode *inode, struct file *file);
 static long i8k_ioctl(struct file *, unsigned int, unsigned long);
@@ -285,6 +281,17 @@ static int i8k_get_fan_speed(int fan)
 }
 
 /*
+ * Read the fan nominal rpm for specific fan speed.
+ */
+static int i8k_get_fan_nominal_speed(int fan, int speed)
+{
+	struct smm_regs regs = { .eax = I8K_SMM_GET_NOM_SPEED, };
+
+	regs.ebx = (fan & 0xff) | (speed << 8);
+	return i8k_smm(&regs) ? : (regs.eax & 0xffff) * i8k_fan_mult;
+}
+
+/*
  * Set the fan speed (off, low, high). Returns the new fan status.
  */
 static int i8k_set_fan(int fan, int speed)
@@ -322,7 +329,6 @@ static int i8k_get_temp(int sensor)
 {
 	int temp = _i8k_get_temp(sensor);
 
-#ifdef I8K_TEMPERATURE_BUG
 	/*
 	 * Sometimes the temperature sensor returns 0x99, which is out of range.
 	 * In this case we retry (once) before returning an error.
@@ -330,13 +336,20 @@ static int i8k_get_temp(int sensor)
 	 # 1003655138 00000099 00003a80 <--- 0x99 = 153 degrees
 	 # 1003655139 00000054 00005c52
 	 */
-	if (temp > I8K_MAX_TEMP) {
+	if (temp == 0x99) {
 		msleep(100);
 		temp = _i8k_get_temp(sensor);
 	}
+	/*
+	 * Return -ENODATA for all invalid temperatures.
+	 *
+	 * Known instances are the 0x99 value as seen above as well as
+	 * 0xc1 (193), which may be returned when trying to read the GPU
+	 * temperature if the system supports a GPU and it is currently
+	 * turned off.
+	 */
 	if (temp > I8K_MAX_TEMP)
-		return -ERANGE;
-#endif
+		return -ENODATA;
 
 	return temp;
 }
@@ -537,8 +550,6 @@ static ssize_t i8k_hwmon_show_temp(struct device *dev,
 	int temp;
 
 	temp = i8k_get_temp(index);
-	if (temp == -ERANGE)
-		return -EINVAL;
 	if (temp < 0)
 		return temp;
 	return sprintf(buf, "%d\n", temp * 1000);
@@ -591,20 +602,17 @@ static ssize_t i8k_hwmon_set_pwm(struct device *dev,
 }
 
 static SENSOR_DEVICE_ATTR(temp1_input, S_IRUGO, i8k_hwmon_show_temp, NULL, 0);
-static SENSOR_DEVICE_ATTR(temp1_label, S_IRUGO, i8k_hwmon_show_temp_label,
-			  NULL, 0);
+static SENSOR_DEVICE_ATTR(temp1_label, S_IRUGO, i8k_hwmon_show_temp_label, NULL,
+			  0);
 static SENSOR_DEVICE_ATTR(temp2_input, S_IRUGO, i8k_hwmon_show_temp, NULL, 1);
-static SENSOR_DEVICE_ATTR(temp2_label, S_IRUGO, i8k_hwmon_show_temp_label,
-			  NULL, 1);
+static SENSOR_DEVICE_ATTR(temp2_label, S_IRUGO, i8k_hwmon_show_temp_label, NULL,
+			  1);
 static SENSOR_DEVICE_ATTR(temp3_input, S_IRUGO, i8k_hwmon_show_temp, NULL, 2);
-static SENSOR_DEVICE_ATTR(temp3_label, S_IRUGO, i8k_hwmon_show_temp_label,
-			  NULL, 2);
+static SENSOR_DEVICE_ATTR(temp3_label, S_IRUGO, i8k_hwmon_show_temp_label, NULL,
+			  2);
 static SENSOR_DEVICE_ATTR(temp4_input, S_IRUGO, i8k_hwmon_show_temp, NULL, 3);
-static SENSOR_DEVICE_ATTR(temp4_label, S_IRUGO, i8k_hwmon_show_temp_label,
-			  NULL, 3);
-static SENSOR_DEVICE_ATTR(temp5_input, S_IRUGO, i8k_hwmon_show_temp, NULL, 4);
-static SENSOR_DEVICE_ATTR(temp5_label, S_IRUGO, i8k_hwmon_show_temp_label,
-			  NULL, 4);
+static SENSOR_DEVICE_ATTR(temp4_label, S_IRUGO, i8k_hwmon_show_temp_label, NULL,
+			  3);
 static SENSOR_DEVICE_ATTR(fan1_input, S_IRUGO, i8k_hwmon_show_fan, NULL,
 			  I8K_FAN_LEFT);
 static SENSOR_DEVICE_ATTR(pwm1, S_IRUGO | S_IWUSR, i8k_hwmon_show_pwm,
@@ -623,12 +631,10 @@ static struct attribute *i8k_attrs[] = {
 	&sensor_dev_attr_temp3_label.dev_attr.attr,	/* 5 */
 	&sensor_dev_attr_temp4_input.dev_attr.attr,	/* 6 */
 	&sensor_dev_attr_temp4_label.dev_attr.attr,	/* 7 */
-	&sensor_dev_attr_temp5_input.dev_attr.attr,	/* 8 */
-	&sensor_dev_attr_temp5_label.dev_attr.attr,	/* 9 */
-	&sensor_dev_attr_fan1_input.dev_attr.attr,	/* 10 */
-	&sensor_dev_attr_pwm1.dev_attr.attr,		/* 11 */
-	&sensor_dev_attr_fan2_input.dev_attr.attr,	/* 12 */
-	&sensor_dev_attr_pwm2.dev_attr.attr,		/* 13 */
+	&sensor_dev_attr_fan1_input.dev_attr.attr,	/* 8 */
+	&sensor_dev_attr_pwm1.dev_attr.attr,		/* 9 */
+	&sensor_dev_attr_fan2_input.dev_attr.attr,	/* 10 */
+	&sensor_dev_attr_pwm2.dev_attr.attr,		/* 11 */
 	NULL
 };
 
@@ -648,12 +654,9 @@ static umode_t i8k_is_visible(struct kobject *kobj, struct attribute *attr,
 	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_TEMP4))
 		return 0;
 	if (index >= 8 && index <= 9 &&
-	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_TEMP5))
-		return 0;
-	if (index >= 10 && index <= 11 &&
 	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_FAN1))
 		return 0;
-	if (index >= 12 && index <= 13 &&
+	if (index >= 10 && index <= 11 &&
 	    !(i8k_hwmon_flags & I8K_HWMON_HAVE_FAN2))
 		return 0;
 
@@ -672,7 +675,7 @@ static int __init i8k_init_hwmon(void)
 
 	i8k_hwmon_flags = 0;
 
-	/* CPU temperature attributes, if temperature reading is OK */
+	/* CPU temperature attributes, if temperature type is OK */
 	err = i8k_get_temp_type(0);
 	if (err >= 0)
 		i8k_hwmon_flags |= I8K_HWMON_HAVE_TEMP1;
@@ -686,9 +689,6 @@ static int __init i8k_init_hwmon(void)
 	err = i8k_get_temp_type(3);
 	if (err >= 0)
 		i8k_hwmon_flags |= I8K_HWMON_HAVE_TEMP4;
-	err = i8k_get_temp_type(4);
-	if (err >= 0)
-		i8k_hwmon_flags |= I8K_HWMON_HAVE_TEMP5;
 
 	/* Left fan attributes, if left fan is present */
 	err = i8k_get_fan_status(I8K_FAN_LEFT);
@@ -712,26 +712,21 @@ static int __init i8k_init_hwmon(void)
 }
 
 struct i8k_config_data {
-	int fan_mult;
-	int fan_max;
+	uint fan_mult;
+	uint fan_max;
 };
 
 enum i8k_configs {
 	DELL_LATITUDE_D520,
-	DELL_LATITUDE_E6540,
 	DELL_PRECISION_490,
 	DELL_STUDIO,
-	DELL_XPS_M140,
+	DELL_XPS,
 };
 
 static const struct i8k_config_data i8k_config_data[] = {
 	[DELL_LATITUDE_D520] = {
 		.fan_mult = 1,
 		.fan_max = I8K_FAN_TURBO,
-	},
-	[DELL_LATITUDE_E6540] = {
-		.fan_mult = 1,
-		.fan_max = I8K_FAN_HIGH,
 	},
 	[DELL_PRECISION_490] = {
 		.fan_mult = 1,
@@ -741,7 +736,7 @@ static const struct i8k_config_data i8k_config_data[] = {
 		.fan_mult = 1,
 		.fan_max = I8K_FAN_HIGH,
 	},
-	[DELL_XPS_M140] = {
+	[DELL_XPS] = {
 		.fan_mult = 1,
 		.fan_max = I8K_FAN_HIGH,
 	},
@@ -776,14 +771,6 @@ static struct dmi_system_id i8k_dmi_table[] __initdata = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "Latitude D520"),
 		},
 		.driver_data = (void *)&i8k_config_data[DELL_LATITUDE_D520],
-	},
-	{
-		.ident = "Dell Latitude E6540",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "Latitude E6540"),
-		},
-		.driver_data = (void *)&i8k_config_data[DELL_LATITUDE_E6540],
 	},
 	{
 		.ident = "Dell Latitude 2",
@@ -845,12 +832,20 @@ static struct dmi_system_id i8k_dmi_table[] __initdata = {
 		.driver_data = (void *)&i8k_config_data[DELL_STUDIO],
 	},
 	{
+		.ident = "Dell XPS 13",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "XPS13"),
+		},
+		.driver_data = (void *)&i8k_config_data[DELL_XPS],
+	},
+	{
 		.ident = "Dell XPS M140",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "MXC051"),
 		},
-		.driver_data = (void *)&i8k_config_data[DELL_XPS_M140],
+		.driver_data = (void *)&i8k_config_data[DELL_XPS],
 	},
 	{ }
 };
@@ -861,6 +856,7 @@ static struct dmi_system_id i8k_dmi_table[] __initdata = {
 static int __init i8k_probe(void)
 {
 	const struct dmi_system_id *id;
+	int fan, ret;
 
 	/*
 	 * Get DMI information
@@ -889,18 +885,39 @@ static int __init i8k_probe(void)
 			return -ENODEV;
 	}
 
-	i8k_fan_mult = fan_mult;
-	i8k_fan_max = fan_max ? : I8K_FAN_HIGH;	/* Must not be 0 */
+	/*
+	 * Set fan multiplier and maximal fan speed from dmi config
+	 * Values specified in module parameters override values from dmi
+	 */
 	id = dmi_first_match(i8k_dmi_table);
 	if (id && id->driver_data) {
 		const struct i8k_config_data *conf = id->driver_data;
-
-		if (fan_mult == I8K_FAN_MULT && conf->fan_mult)
-			i8k_fan_mult = conf->fan_mult;
-		if (fan_max == I8K_FAN_HIGH && conf->fan_max)
-			i8k_fan_max = conf->fan_max;
+		if (!fan_mult && conf->fan_mult)
+			fan_mult = conf->fan_mult;
+		if (!fan_max && conf->fan_max)
+			fan_max = conf->fan_max;
 	}
+
+	i8k_fan_max = fan_max ? : I8K_FAN_HIGH;	/* Must not be 0 */
 	i8k_pwm_mult = DIV_ROUND_UP(255, i8k_fan_max);
+
+	if (!fan_mult) {
+		/*
+		 * Autodetect fan multiplier based on nominal rpm
+		 * If fan reports rpm value too high then set multiplier to 1
+		 */
+		for (fan = 0; fan < 2; ++fan) {
+			ret = i8k_get_fan_nominal_speed(fan, i8k_fan_max);
+			if (ret < 0)
+				continue;
+			if (ret > I8K_FAN_MAX_RPM)
+				i8k_fan_mult = 1;
+			break;
+		}
+	} else {
+		/* Fan multiplier was specified in module param or in dmi */
+		i8k_fan_mult = fan_mult;
+	}
 
 	return 0;
 }
