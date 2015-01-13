@@ -767,8 +767,6 @@ struct i8k_config_data {
 enum i8k_configs {
 	DELL_LATITUDE_D520,
 	DELL_PRECISION_490,
-	DELL_STUDIO,
-	DELL_XPS,
 };
 
 static const struct i8k_config_data i8k_config_data[] = {
@@ -779,14 +777,6 @@ static const struct i8k_config_data i8k_config_data[] = {
 	[DELL_PRECISION_490] = {
 		.fan_mult = 1,
 		.fan_max = I8K_FAN_TURBO,
-	},
-	[DELL_STUDIO] = {
-		.fan_mult = 1,
-		.fan_max = I8K_FAN_HIGH,
-	},
-	[DELL_XPS] = {
-		.fan_mult = 1,
-		.fan_max = I8K_FAN_HIGH,
 	},
 };
 
@@ -877,7 +867,6 @@ static struct dmi_system_id i8k_dmi_table[] __initdata = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Studio"),
 		},
-		.driver_data = (void *)&i8k_config_data[DELL_STUDIO],
 	},
 	{
 		.ident = "Dell XPS 13",
@@ -885,7 +874,6 @@ static struct dmi_system_id i8k_dmi_table[] __initdata = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "XPS13"),
 		},
-		.driver_data = (void *)&i8k_config_data[DELL_XPS],
 	},
 	{
 		.ident = "Dell XPS M140",
@@ -893,7 +881,6 @@ static struct dmi_system_id i8k_dmi_table[] __initdata = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "MXC051"),
 		},
-		.driver_data = (void *)&i8k_config_data[DELL_XPS],
 	},
 	{ }
 };
